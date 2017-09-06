@@ -1,0 +1,66 @@
+# NCD templates for starting/stopping linux services
+
+include_guard "service_templates"
+
+include "/etc/ncd/utility_templates.ncdi"
+
+# Global settings for locations of service binaries.
+template service_settings {
+         var("/usr/sbin/service") sysvinit;
+         var("/sbin/initctl") upstart_service;
+}
+
+# Start/stop a sysvinit service.
+# First and only arg is the name of the service.
+template start_sysvinit_service {
+         call("log_args",{"start_sysvinit_service"});
+         call("service_settings",{}) settings;
+         run({settings.sysvinit,_arg0,"start"},
+             {settings.sysvinit,_arg0,"stop"});
+}
+
+# Start/stop an upstart service.
+# First and only arg is the name of the service.
+template start_upstart_service {
+         call("log_args",{"start_upstart_service"});
+         call("service_settings",{}) settings;         
+         run({settings.upstart,"start",_arg0},
+             {settings.upstart,"stop",_arg0});
+}
+
+# Process for starting openvpn
+# First arg should be a scope for dependencies TODO!!!!
+template openvpn {
+         call("log_args",{"openvpn"});
+         call("service_settings",{}) settings;
+         alias(_arg0) scope;
+         # Check dependencies
+         scope->depend(_args) ifdep;
+         # Variable to let caller know what device was used for internet
+         var(ifdep.dev) dev;
+         # Start openvpn
+         call("start_sysvinit_service",{"openvpn"});
+         # Let caller know that vpn is ready
+         scope->provide("openvpn");
+}
+
+
+# Return status of the openvpn service (no args).
+# The "output" variable contains the output from running "service openvpn status",
+# and the "statuses" variable is a map whose keys are the names of config files
+# in the openvpn directory and whose values are their corresponding statuses.
+template openvpn_status {
+         call("log_args",{"openvpn_status"});
+         call("service_settings",{}) settings;
+         call("run_process_output",{settings.sysvinit,"openvpn","status"}) r;
+         var(r.result) output;
+         value([]) statuses;
+         explode("\n",r.result) lines;
+         Foreach (lines As line) {
+                 regex_match(line,"'([^']+)'\\W+(.+)") match;
+                 If (match.succeeded) {
+                    statuses->insert(match.match1,match.match2);
+                 };
+         };
+}
+

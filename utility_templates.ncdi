@@ -1,0 +1,301 @@
+# Utility functions for NCD
+
+# Note: you need the latest version of NCD with the bugfix to file_open.c
+
+include_guard "utility_templates"
+
+# Append string (second arg) to the end of a file (first arg).
+template file_append {
+         call("log_args",{"append_to_file"});
+         var(_arg0) filename;
+         var(_arg1) content;
+         file_open(filename,"a") file;
+         var(file.is_error) error;
+         not(error) ok;
+         If (ok) {
+            file->write(content);
+            file->close();
+         } else {
+           println("Failed to write to file ",filename);
+         };
+}
+
+# Compare two strings and indicate if they are the same or not.
+# This allows you to test for non-equality in one line instead of two.
+template strcmp2 {
+         call("log_args",{"strcmp2"});
+         strcmp(_arg0,_arg1) same;
+         not(same) not_same;
+}
+
+# Given two lists (first and second arguments),
+# create a list of elements in both lists and store it in "result" variable.
+template intersection {
+         call("log_args",{"intersection"});
+         listfrom(_arg0) list1;
+         listfrom(_arg1) list2;
+         listfrom({}) result;
+         Foreach (list1 As elem) {
+                 list2->contains(elem) test;
+                 If (test) {
+                    result->append(elem);
+                 };
+         };
+}
+
+# Given two lists (first and second arguments),
+# create a list of elements in either list and store it in "result" variable.
+template union {
+         call("log_args",{"union"});
+         listfrom(_arg0) list1;
+         listfrom(_arg1) list2;
+         listfrom({}) result;
+         Foreach (list1 As elem) {
+                 result->contains(elem) test1;
+                 not(test1) test2;
+                 If (test2) {
+                    result->append(elem);
+                 };
+         };
+         Foreach (list2 As elem) {
+                 result->contains(elem) test3;
+                 not(test3) test4;
+                 If (test4) {
+                    result->append(elem);
+                 };
+         };
+}
+
+# Given two lists (first and second arguments),
+# create a list of elements in the first list but not the second,
+# and store it in the "result" variable.
+template set_difference {
+         call("log_args",{"set_difference"});
+         listfrom(_arg0) list1;
+         listfrom(_arg1) list2;
+         listfrom({}) result;
+         Foreach (list1 As elem) {
+                 list2->contains(elem) test1;
+                 not(test1) test2;
+                 If (test2) {
+                    result->append(elem);
+                 };
+         };
+}
+
+# Create a list of keys and a list of values from a map object (first arg).
+# The keys are placed in the "keys" variable and the values are placed in
+# the "values" variable.
+template map_to_lists {
+         call("log_args",{"map_to_lists"});
+         value(_arg0) map;
+         listfrom({}) keys;
+         listfrom({}) values;
+         Foreach (map As key:val) {
+                 keys->append(key);
+                 values->append(val);
+         };
+}
+
+# Create a map from a list of keys (first arg) and a list of values (second arg).
+# The map is put in the "map" variable.
+template lists_to_map {
+         call("log_args",{"lists_to_map"});
+         listfrom(_arg0) keys;
+         listfrom(_arg1) values;
+         keys->length() klen;
+         values->length() vlen;
+         num_equal(klen,vlen) test;
+         assert(test);
+         num_subtract(klen,"1") max;
+         call("numberlist",{"0",max,"1"}) indices;
+         value([]) map;
+         Foreach (indices.numbers As index) {
+                 keys->get(index) key;
+                 values->get(index) val;
+                 map->insert(key,val);
+         };
+}
+
+# Given a map object (first arg), and a value (second arg),
+# return the key in the map that has that value.
+# If no such value exists in the map then the "exists" variable
+# will be set to "false" otherwise it will be set to "true".
+template map_rassoc {
+         value(_arg0) map;
+         var(_arg1) val;
+         var("") key;
+         var("false") exists;
+         call("map_to_lists",{map}) l;
+         l.values->find("0",val) f;
+         If (f.found) {
+            exists->set("true");
+            l.keys->get(f.pos) x;
+            key->set(x);
+         };
+}
+
+# Create a list of numbers (can be used with Foreach for looping).
+# First arg is the first number, second arg is the last number,
+# and third arg is the step (difference between consecutive numbers).
+# Only positive numbers are allowed.
+# The list of numbers will be returned in the numbers variable.
+# If the template arguments are invalide (i.e. result in an infinite list),
+# then the invalid variable will be set to true, and a message will be
+# printed.
+template numberlist {
+         call("log_args",{"numberlist"});
+         # Check args (don't want to get stuck in an infinite loop)
+         num_lesser(_arg2,"1") invalidstep;
+         num_lesser(_arg1,_arg0) invalidrange;
+         or(invalidstep,invalidrange) invalid;
+         to_string(_args) argstring;
+         list() numbers;
+         var(_arg0) i;
+         If (invalid) {
+            println("Invalid args to numberlist: ",argstring);
+         } else {
+           numbers->append(i);
+           backtrack_point() here;
+           num_add(i,_arg2) j;
+           i->set(j);
+           num_lesser_equal(i,_arg1) test;
+           If (test) {
+              numbers->append(i);
+              here->go();
+           };
+         };
+}
+
+# Find out whether regular expression (first arg) matches any of the
+# string in a list (second arg).
+# If there is a match then "in" will be "true" otherwise "not_in" will
+# be true.
+template regex_cmp_list {
+         call("log_args",{"regex_cmp_list"});
+         call("regex_match_lines",{_arg0,_arg1}) x;
+         x.matches->length() len;
+         num_greater(len,"0") in;
+         not(in) not_in;
+}
+
+# Append a string (first arg) to each element of a list of strings (second arg)
+template append_to_strings {
+         #call("log_args",{"append_to_strings"});
+         list() newvals;
+         Foreach (_arg1 As arg) {
+                 concat(arg,_arg0) newval;
+                 newvals->append(newval);
+         };
+}
+
+# Prepend a string (first arg) to each element of a list of strings (second arg)
+template prepend_to_strings {
+         #call("log_args",{"prepend_to_strings"});
+         list({}) newvals;
+         Foreach (_arg1 As arg) {
+                 concat(_arg0,arg) newval;
+                 newvals->append(newval);
+         };
+}
+
+# Given a regular expression (first arg), and list of strings (second arg).
+# Find the elements of the list which match the regular expression.
+# Indices of matched lines are exposed via "indices" variable, and corresponding lines
+# are exposed via "matches" variable. The "found" variable indicates whether or not
+# a match was found at all, and the nummatches variable indicates the number of matches
+# found (these variables save a few extra lines in calling code).
+template regex_match_lines {
+         call("log_args",{"regex_match_lines"});
+         println("Initializing regex_match_lines with ",_arg0);
+         rprintln("Deinitializing regex_match_lines with ",_arg0);
+         listfrom(_arg1) lines;
+         listfrom({}) indices;
+         listfrom({}) matches;
+         var("false") found;
+         var("0") nummatches;
+         lines->length() len;
+         num_greater(len,"0") nonnil;
+         If (nonnil) {
+            Foreach (lines As line) {
+                    lines->find("0",line) index;
+                    regex_match(line,_arg0) line_matched;
+                    If (line_matched.succeeded) {
+                       found->set("true");
+                       indices->append(index.pos);
+                       matches->append(line);
+                    };
+            };
+            matches->length() x;
+            nummatches->set(x);
+         };
+}
+
+# Like regex_match_lines but return lines that DONT match
+# the first arg (a regular expression).
+template regex_not_match_lines {
+         #call("log_args",{"regex_not_match_lines"});
+         println("Initializing regex_not_match_lines with ",_arg0);
+         rprintln("Deinitializing regex_not_match_lines with ",_arg0);
+         listfrom(_arg1) lines;
+         listfrom({}) indices;
+         listfrom({}) matches;
+         lines->length() len;
+         num_greater(len,"0") nonnil;
+         If (nonnil) {
+            Foreach (lines As line) {
+                    lines->find("0",line) index;
+                    regex_match(line,_arg0) line_matched;
+                    not(line_matched.succeeded) nomatch;
+                    If (nomatch) {
+                       indices->append(index.pos);
+                       matches->append(line);
+                    };
+            };
+         };
+}
+
+# This template should be called at the beginning of a process template to
+# print a message about its args on initialization/deinitialization.
+# The first argument to this template should be the name of the calling
+# template.
+template log_args {
+         to_string(_caller._args) argstring;
+         concat("Initializing ",_arg0," with args: ",argstring) logmessageup;
+         concat("Deinitializing ",_arg0," with args: ",argstring) logmessagedown;
+         log("debug",logmessageup);
+         log("debug",logmessagedown);
+         rprintln(logmessagedown);
+         println(logmessageup);
+}
+
+# Run an external command, and save output in result variable.
+# The args to this template should be the command followed by
+# any arguments to the command.
+template run_process_output {
+    call("log_args",{"run_process_output"});
+    alias("_args") command;
+    var("true") not_finished;
+    value("") result;
+    backtrack_point() break;
+    If (not_finished) {
+        not_finished->set("false");
+        sys.start_process(command, "r", ["keep_stderr":"true"]) proc;
+        If (proc.is_error) {
+            break->go();
+        };
+        proc->read_pipe() read_pipe;
+        If (read_pipe.is_error) {
+            break->go();
+        };
+        backtrack_point() read_again;
+        read_pipe->read() read;
+        If (read.not_eof) {
+            result->append(read);
+            read_again->go();
+        };
+        break->go();
+    };
+}
+
+

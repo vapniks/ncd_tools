@@ -1,0 +1,257 @@
+# NCD templates related to network devices
+
+include_guard "device_templates"
+
+include "/etc/ncd/utility_templates.ncdi"
+
+# General settings for templates in this file.
+template device_settings {
+         # wpa_supplicant settings
+         var("/etc/wpa_supplicant.conf") wpa_conf;
+         var("/sbin/wpa_supplicant") wpa_bin;
+}
+
+# General process for checking existence of a device
+template wait_device {
+         call("log_args",{"wait_device"});
+         var(_arg0) dev;
+         net.backend.waitdevice(dev);
+         _caller.scope->provide(dev);
+}
+
+# Connect ethernet device and obtain IP address via dhcp.
+
+# First arg should the name of the ethernet device.
+# Second arg should be an IP address and prefix (CIDR notation) to assign to
+# the device, or "dhcp" to use dhcp.
+# Third arg should be a scope for dependencies (e.g. "_caller.scope").
+# Fourth arg should be a list of dependency names in priority order.
+# The template process will not proceed until one of the dependencies has
+# been met (and will be restarted if a higher priority one becomes available).
+# E.g: call("eth_connect",{"eth2","dhcp","_caller.scope",{"dep1","dep2","dep3"}})
+template eth_connect {
+         call("log_args",{"eth_connect"});
+         # Wait for dependencies
+         alias(_arg2) scope;
+         listfrom(_arg3) dependencies;
+         dependencies->length() len;
+         num_greater(len,"0") lentest;
+         If (lentest) {
+            scope->depend(dependencies);
+         };
+         # Variables to hold information to make it available to calling process
+         var(_arg0) dev;
+         var("false") addr;
+         var("false") addr_prefix;
+         var("false") gateway;
+         var("false") dns_servers;
+         # Make sure the cable is plugged in
+         net.backend.waitdevice(dev);
+         # Put the device up using ifup
+         net.up(dev);
+         # Wait for network connection
+         net.backend.waitlink(dev);
+         # Assign IP address
+         strcmp(_arg1,"dhcp") isdhcp;
+         If (isdhcp) {
+            # Get IP address for device and set variables
+            call("get_ip_via_dhcp",{dev}) dhcp;
+            addr->set(dhcp.addr);
+            addr_prefix->set(dhcp.addr_prefix);
+            gateway->set(dhcp.gateway);
+            dns_servers->set(dhcp.dns_servers);
+         } else {
+           parse_ipv4_cidr_addr(_arg1) x;
+           addr->set(x.addr);
+           addr_prefix->set(x.prefix);
+           net.ipv4.addr(dev,addr,addr_prefix);
+         };
+         # Provide
+         concat(dev,"_connect") name;         
+         scope->provide(name);
+}
+
+# First arg should the name of the ethernet device,
+# second arg should be a scope for dependencies (e.g. "_caller.scope"),
+# and the third arg should be a list of dependency names in priority order.
+# The template process will not proceed until one of the dependencies has
+# been met (and will be restarted if a higher priority one becomes available).
+# E.g: call("wifi_connect",{"wlan1","_caller.scope",{"dep1","dep2","dep3"}})
+template wifi_connect {
+         call("log_args",{"wifi_connect"});
+         call("device_settings",{}) settings;
+         # Wait for dependencies
+         alias(_arg2) scope;
+         listfrom(_arg3) dependencies;
+         dependencies->length() len;
+         num_greater(len,"0") lentest;
+         If (lentest) {
+            scope->depend(dependencies);
+         };
+         # Variables to hold information to make it available to calling process
+         var(_arg0) dev;
+         var("false") addr;
+         var("false") addr_prefix;
+         var("false") gateway;
+         var("false") dns_servers;
+         # Make sure the device is available
+         net.backend.waitdevice(dev);
+         net.backend.rfkill("wlan",dev);
+         # Connect to a wireless network using wpa_supplicant 
+         net.backend.wpa_supplicant(dev,settings.wpa_conf,settings.wpa_bin,{});
+         # Wait for network connection             
+         net.backend.waitlink(dev);
+         # Assign IP address
+         strcmp(_arg1,"dhcp") isdhcp;
+         If (isdhcp) {
+            # Get IP address for device and set variables
+            call("get_ip_via_dhcp",{dev}) dhcp;
+            addr->set(dhcp.addr);
+            addr_prefix->set(dhcp.addr_prefix);
+            gateway->set(dhcp.gateway);
+            dns_servers->set(dhcp.dns_servers);
+         } else {
+           parse_ipv4_cidr_addr(_arg1) x;
+           addr->set(x.addr);
+           addr_prefix->set(x.prefix);
+           net.ipv4.addr(dev,addr,addr_prefix);
+         };
+         # Provide
+         concat(dev,"_connect") name;         
+         scope->provide(name);
+}
+
+# template ovpn_connect {
+#          call("log_args",{"ovpn_connect"});
+         
+# }
+
+# Put a network interface up, obtain ip address for it,
+# and set default routes on associated routing table.
+# First and only argument is the name of the device.
+# Information about the device (IP address, gateway, etc) will be exposed to the
+# caller through variables addr, addr_prefix, gateway, dns_servers, rt_table.
+# These variables will be set to "false" by default.
+template dev_up {
+         call("log_args",{"dev_up"});
+         call("global_settings") settings;
+         var(_arg0) dev;
+         # Variables to hold information to make it available to calling process
+         var("false") addr;
+         var("false") addr_prefix;
+         var("false") gateway;
+         var("false") dns_servers;
+         var("false") rt_table;
+         # Find out what kind of device we are dealing with         
+         regex_match(dev,"tun") is_tun;
+         regex_match(dev,"wlan") is_wifi;
+         regex_match(dev,"eth") is_ethernet;
+         net.backend.waitdevice(dev);
+         If (is_tun.succeeded) {
+            _caller.scope->depend({"openvpn"});
+            # For tun devices use iproute2 to get ip address and gateway
+            call("get_device_iproute2_info",{dev}) ipinfo;
+            addr->set(ipinfo.ip);
+            gateway->set(ipinfo.gateway);
+         } else {
+             If (is_wifi.succeeded) {
+                net.backend.rfkill("wlan",dev);
+                # Connect to a wireless network using wpa_supplicant 
+                net.backend.wpa_supplicant(dev,settings.wpaconf,settings.wpabin,{});
+             } elif (is_ethernet.succeeded) {
+                 # Put the device up using ifup
+                 net.up(dev);
+             };
+             # Wait for network connection             
+             net.backend.waitlink(dev);
+             # Get IP address for device and set variables
+             call("get_ip_via_dhcp",{dev}) dhcp;
+             addr->set(dhcp.addr);
+             addr_prefix->set(dhcp.addr_prefix);
+             gateway->set(dhcp.gateway);
+             dns_servers->set(dhcp.dns_servers);
+         };
+         # Set default routes in associated routing table
+         # and make the table name available to the calling process.
+         call("strcmp2",{gateway,"false"}) gtw;
+         If (gtw.not_false) {
+            concat("via",_arg0) tblname;
+            call("flush_rt_table",{tblname});
+            call("set_default_routes",{tblname,dev,gateway});
+            rt_table->set(tblname);
+         };
+         # Let calling process know that tun device is up.
+         concat(dev,"_up") name;
+         _caller.scope->provide(name);
+}
+
+
+# This template takes a single argument: the device object
+# It then obtains an ip address via dhcp and assigns it to
+# the device. The ip address, prefix, gateway and dns servers
+# are exposed as variables for access by the caller.
+template get_ip_via_dhcp {
+    call("log_args",{"get_ip_via_dhcp"});
+    # net.ipv4.dhcp() will block here until it obtaines an IP address.
+    # (it will only obtain the IP address, and not assign it).
+    net.ipv4.dhcp(_arg0) dhcp;
+    # Check IP address - make sure it's not local.
+    # The statement below will do nothing if the address does not belong to the specified
+    # subnet, but if it does, it will log an error and block the process at this point
+    net.ipv4.ifnot_addr_in_network(dhcp.addr, "127.0.0.1/8");
+    # Assign IP configuration variables, to allow easy access from the caller.    
+    var(dhcp.addr) addr;
+    var(dhcp.prefix) addr_prefix;
+    var(dhcp.gateway) gateway;
+    var(dhcp.dns_servers) dns_servers;
+    # Assign IP address to interface.
+    net.ipv4.addr(_arg0,addr,addr_prefix);
+    # Add DNS servers.
+    net.dns(dns_servers, "20");
+}
+
+# Given a device name as the first argument,
+# find out the assigned ip address and gateway using iproute2.
+# Results are exposed to the caller in ip and gateway variables.
+# This should probably be cleaned up and made more general to provide more info,
+# but I dont have time now.
+template get_device_iproute2_info {
+         call("log_args",{"get_device_iproute2_info"});
+         var("false") ip;
+         var("false") gateway;
+         call("run_process_output",{"/sbin/ip","addr","list","dev",_arg0}) cmd1;
+         call("run_process_output",{"/sbin/ip","route","list","dev",_arg0}) cmd2;
+         explode("\n",cmd1.result) cmd1lines;
+         explode("\n",cmd2.result) cmd2lines;         
+         value(cmd1lines) cmd1lines2;
+         value(cmd2lines) cmd2lines2;
+         call("regex_match_lines",{"\\W+inet\\W+",cmd1lines2}) cmd1match;
+         call("regex_match_lines",{"\\W+via\\W+",cmd2lines2}) cmd2match;
+         cmd1match.matches->length() len1;
+         cmd2match.matches->length() len2;
+         num_greater(len1,"0") cmd1match_found;
+         num_greater(len2,"0") cmd2match_found;
+         If (cmd1match_found) {
+            cmd1match.matches->get("0") output;
+            regex_match(output,"\\W*inet\\W+([0-9.]+)\\W+") regex1;
+            regex_match(output,"\\W+peer\\W+([0-9.]+)\\W+") regex2;
+            If (regex1.succeeded) {
+               ip->set(regex1.match1);
+            };
+            If (regex2.succeeded) {
+               gateway->set(regex2.match1);   
+            };
+         };
+         not(gateway) noluck;
+         and(noluck,cmd2match_found) noluck2;
+         If (noluck2) {
+            cmd2match.matches->get("0") output;
+            regex_match(output,"\\W+via\\W+([0-9.]+)") regex1;
+            println("here: ",output);
+            If (regex1.succeeded) {
+               gateway->set(regex1.match1);
+            };
+         };
+}
+
+

@@ -1,0 +1,208 @@
+# General routing utility functions for NCD
+
+# Note: you need the latest version of NCD with the bugfix to file_open.c
+
+include_guard "routing_templates"
+
+include "/etc/ncd/utility_templates.ncdi"
+
+# Add/delete a route to the routing tables.
+# This is more general than the net.ipv4.route function since you
+# can use any args to the ip route command, which means that you
+# can specify the table to add the route to.
+# Arguments will be appended to "ip route add" and "ip route del"
+template add_route {
+         call("log_args",{"add_route"});
+         listfrom({"/sbin/ip","route","add"},_args) routeup;
+         listfrom({"/sbin/ip","route","del"},_args) routedown;
+         run(routeup,routedown);
+}
+
+# Flush a routing table whose name is given in the first arg to the function.
+template flush_rt_table {
+         call("log_args",{"flush_rt_table"});
+         runonce({"/sbin/ip","route","flush","table",_arg0},{});
+}
+
+# Create map of existing routing table names.
+# Keys in the map are the names of the tables,
+# values in the map are the corresponding table numbers.
+template rt_tables {
+         call("log_args",{"rt_tables"});
+         file_read("/etc/iproute2/rt_tables") rt_tables;
+         explode("\n",rt_tables) lines;
+         value([]) tables;
+         Foreach (lines As line) {
+                 regex_match(line,"^([0-9]+)\\W+([a-z]+)") line_match;
+                 If (line_match.succeeded) {
+                    tables->insert(line_match.match2,line_match.match1);
+                 };
+         };
+}
+
+# Add a new table to /etc/iproute2/rt_tables
+# First arg should be the name of the table.
+# If a table by that name already exists then no new table
+# will be created. In either case the "number" variable will be set to the table number.
+# If a new table cannot be created because there are no table numbers
+# unused then set the "success" variable to "false" (otherwise it will be "true").
+template add_rt_table {
+         call("log_args",{"add_rt_table"});
+         var(_arg0) name;
+         var("0") number;
+         var("true") success;
+         call("rt_tables",{}) rt;
+         rt.tables->try_get(name) x;
+         If (x.exists) {
+             number->set(x);
+         } else {
+           call("map_to_lists",{rt.tables}) l;
+           call("numberlist",{"0","255","1"}) nlist;
+           call("set_difference",{nlist.numbers,l.values}) freenums;
+           # Check that there are some table numbers available to use
+           freenums.result->length() len;
+           num_greater(len,"0") test;
+           If (test) {
+              # Get the first free table number and set the number var
+              freenums.result->get("0") n;
+              number->set(n);
+              # Now to add to /etc/iproute2/rt_tables
+              concat("\n",number,"\t",name,"\n") entry;
+              call("file_append",{"/etc/iproute2/rt_tables",entry}) f;
+              If (f.error) {
+                 success->set("false");
+              };
+           } else {
+             success->set("false");
+           };
+         };
+}
+
+# Test for the existence of a routing table.
+# First arg should be the name or number of a routing table to test for.
+# If the routing table exists then the "exists" variable will be set to "true",
+# and the "name" & "number" variables will be set to the name and number
+# of the routing table respectively.
+template get_rt_table {
+         call("log_args",{"get_rt_table"});
+         var("") number;
+         var("") name;
+         var("") exists;
+         parse_number(_arg0) numtest;
+         strcmp(numtest.succeeded,"true") isnum;
+         call("rt_tables",{}) rt;
+         call("map_to_lists",{rt.tables}) l;
+         listfrom(l.keys) names;
+         listfrom(l.values) numbers;
+         If (isnum) {
+            number->set(_arg0);
+            numbers->find("0",_arg0) x;
+            exists->set(x.found);
+            If (exists) {
+               names->get(x.pos) nm;
+               name->set(nm);
+            };
+         } else {
+           name->set(_arg0);
+           names->find("0",_arg0) x;
+           exists->set(x.found);
+           If (exists) {
+              numbers->get(x.pos) nm;
+              number->set(nm);
+           };
+         };
+}
+
+# Add/alter default routes in a routing table to go via a given device.
+# First arg is the name of the table, second arg is the name of the device,
+# third arg is the gateway address.
+template set_default_routes {
+         call("log_args",{"set_default_routes"});
+         # Check that the device is connected
+         net.backend.waitlink(_arg1);
+         # Check that gateway isn't local address
+         net.ipv4.ifnot_addr_in_network(_arg2, "127.0.0.1/8");
+         # Remove old default routes (if any)
+         runonce({"/sbin/ip","route","del","0.0.0.0/1","table",_arg0},{});
+         runonce({"/sbin/ip","route","del","default","table",_arg0},{});
+         # Add default routes via gateway
+         call("add_route",{"default","via",_arg2,"dev",_arg1,"table",_arg0});
+         call("add_route",{"0.0.0.0/1","via",_arg2,"dev",_arg1,"table",_arg0});
+}
+
+# Create lists of routing rules and their priorities.
+# Priorities are stored in "priority" variable, and rules (as text strings) are
+# stored in "rules" variable.
+# Lists are used rather than a map in case there are multiple rules with the
+# same priority (can sometimes happen).
+# You can always convert the lists to a map with the lists_to_map template.
+template rt_rules {
+         call("run_process_output",{"/sbin/ip","rule","list"}) cmd;
+         explode("\n",cmd.result) cmd1lines;         
+         value(cmd1lines) lines;
+         value({}) priorities;
+         value({}) rules;
+         Foreach (lines As line) {
+                 regex_match(line,"^([0-9]+):\\W+(.+)") line_match;
+                 If (line_match.succeeded) {
+                    priorities->append(line_match.match1);
+                    rules->append(line_match.match2);
+                 };
+         };
+}
+
+# Get matching routing rules.
+# The first arg should be either a priority number for a rule, or a regular
+# expression matching the rule. If rules exists matching the priority number
+# or regular expression, then the "exists" variable will be set to true,
+# and the "priority" and "rule" variables will be set to lists of corresponding
+# priority numbers and rule strings respectively.
+# Note: it is feasible that you could have several rules with the same priority
+# number if your rules are set up incorrectly.
+template get_rt_rules {
+         call("log_args",{"get_rt_rule"});
+         listfrom({}) priorities;
+         listfrom({}) rules;
+         var("") exists;
+         call("rt_rules",{}) rt;
+         parse_number(_arg0) numtest;
+         If (numtest.succeeded) {
+            concat("^",_arg0,"$") regex;
+            call("regex_match_lines",{regex,rt.priorities}) matches;
+         } else {
+           call("regex_match_lines",{_arg0,rt.rules}) matches;
+         } branch;
+         exists->set(branch.matches.found);
+         If (exists) {
+            Foreach (branch.matches.indices As index) {
+                    rt.priorities->get(index) prio;
+                    rt.rules->get(index) rule;
+                    priorities->append(prio);
+                    rules->append(rule);
+            };
+         };
+}
+
+# Add/delete a routing rule.
+# First arg is a priority for the rule (as a string).
+# Subsequent args are other arguments to append to "ip rule add" command.
+template add_rt_rule {
+         call("log_args",{"add_rt_rule"});
+         listfrom(_args) args;
+         args->remove_at("0");
+         listfrom({"/sbin/ip","rule","add"},args,{"priority",_arg0}) ruleup;
+         listfrom({"/sbin/ip","rule","del"},args,{"priority",_arg0}) ruledown;
+         # First delete any rules with the same priority number
+         runonce(ruledown,{});
+         run(ruleup,ruledown);
+}
+
+# Delete a routing rule with a given priority number (first arg).
+# The variable "success" indicates whether the deletion was successful or not.
+template del_rt_rule {
+         call("log_args",{"del_rt_rule"});
+         var(_arg0) priority;
+         runonce({"/sbin/ip"},{"rule","del","priority",priority}) cmd;
+         num_greater_equal(cmd.exit_status,"0") success;
+}
+
